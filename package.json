@@ -1,26 +1,24 @@
 {
   "name": "hcm-independence-socialism-quiz",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
-    "install:all": "npm install && cd client && npm install",
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
-    "server": "node server/index.js",
-    "client": "cd client && npm run dev",
-    "build": "cd client && npm run build",
-    "start": "NODE_ENV=production node server/index.js"
+    "install:all": "npm install && npm install --prefix client",
+    "build": "npm run build --prefix client",
+    "start": "cross-env NODE_ENV=production node server/index.js",
+    "dev": "concurrently \"node server/index.js\" \"npm run dev --prefix client\""
   },
   "dependencies": {
-    "better-sqlite3": "^11.9.1",
-    "compression": "^1.8.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
+    "better-sqlite3": "^11.10.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.5.0",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
-    "helmet": "^8.0.0",
-    "socket.io": "^4.8.1",
-    "zod": "^3.24.1"
+    "helmet": "^8.1.0",
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

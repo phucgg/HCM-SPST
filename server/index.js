@@ -1,103 +1,356 @@
-import 'dotenv/config';
-import express from 'express';
-import http from 'http';
-import path from 'path';
-import cors from 'cors';
-import helmet from 'helmet';
-import compression from 'compression';
-import rateLimit from 'express-rate-limit';
-import { Server } from 'socket.io';
-import { z } from 'zod';
-import { publicQuestions, findQuestion, questions } from './questions.js';
-import { insertAttempt, getLeaderboard } from './db.js';
+import "dotenv/config";
+import express from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import crypto from "node:crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createServer } from "node:http";
+import { Server } from "socket.io";
+
+import { questions } from "./questions.js";
+import {
+  createSession,
+  getSession,
+  saveSessionProgress,
+  markSessionSubmitted,
+  insertAttempt,
+  getLeaderboard
+} from "./db.js";
 
 const app = express();
-const server = http.createServer(app);
-const PORT = Number(process.env.PORT || 3000);
-const isProd = process.env.NODE_ENV === 'production';
-const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
+const httpServer = createServer(app);
+const io = new Server(httpServer);
 
-app.disable('x-powered-by');
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(compression());
-app.use(express.json({ limit: '20kb' }));
-app.use(cors({ origin: isProd ? false : allowedOrigin }));
+const PORT = process.env.PORT || 3000;
 
-const limiter = rateLimit({
+const rawTimeLimit = Number(process.env.QUIZ_TIME_LIMIT_SECONDS || 600);
+
+const TIME_LIMIT_SECONDS = Math.min(
+  600,
+  Math.max(60, Number.isFinite(rawTimeLimit) ? rawTimeLimit : 600)
+);
+
+app.use(helmet());
+app.use(express.json({ limit: "100kb" }));
+
+const submitLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 40,
+  limit: 60,
   standardHeaders: true,
   legacyHeaders: false
 });
-app.use('/api', limiter);
 
-const io = new Server(server, {
-  cors: { origin: isProd ? false : allowedOrigin }
-});
-
-io.on('connection', socket => {
-  socket.emit('leaderboard:update', getLeaderboard(10));
-});
-
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, tracking: false });
-});
-
-app.get('/api/questions', (_req, res) => {
-  res.json({ questions: publicQuestions() });
-});
-
-app.get('/api/leaderboard', (_req, res) => {
-  res.json({ leaderboard: getLeaderboard(10) });
-});
-
-const submitSchema = z.object({
-  nickname: z.string().trim().min(2).max(24).regex(/^[\p{L}\p{N}_ .-]+$/u),
-  startedAt: z.number().int().positive(),
-  answers: z.array(z.object({
-    questionId: z.string(),
-    selectedIndex: z.number().int().min(0).max(3)
-  })).min(1).max(20)
-});
-
-app.post('/api/submit', (req, res) => {
-  const parsed = submitSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: 'Dữ liệu không hợp lệ.' });
-  }
-
-  const { nickname, startedAt, answers } = parsed.data;
-  const now = Date.now();
-  const durationMs = Math.max(0, Math.min(now - startedAt, 60 * 60 * 1000));
-
-  let score = 0;
-  const detail = answers.map(answer => {
-    const q = findQuestion(answer.questionId);
-    if (!q) return null;
-    const correct = q.answerIndex === answer.selectedIndex;
-    if (correct) score += 1;
-    return {
-      questionId: q.id,
-      correct,
-      correctIndex: q.answerIndex,
-      explain: q.explain
-    };
-  }).filter(Boolean);
-
-  insertAttempt({ nickname, score, total: questions.length, durationMs });
-  const leaderboard = getLeaderboard(10);
-  io.emit('leaderboard:update', leaderboard);
-
-  res.json({ score, total: questions.length, durationMs, detail, leaderboard });
-});
-
-if (isProd) {
-  const dist = path.join(process.cwd(), 'client', 'dist');
-  app.use(express.static(dist));
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+function cleanDisplayName(name) {
+  return String(name || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 30);
 }
 
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log('No analytics, no cookies, no IP/user-agent stored by app code.');
+function getCorrectIndex(question) {
+  if (Number.isInteger(question.correctIndex)) return question.correctIndex;
+  if (Number.isInteger(question.answerIndex)) return question.answerIndex;
+  return -1;
+}
+
+function shuffleArray(array) {
+  const cloned = [...array];
+
+  for (let i = cloned.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(0, i + 1);
+    [cloned[i], cloned[j]] = [cloned[j], cloned[i]];
+  }
+
+  return cloned;
+}
+
+function createSessionQuestions() {
+  const shuffledQuestions = shuffleArray(questions);
+
+  return shuffledQuestions.map((question) => {
+    const optionOrder = shuffleArray(
+      question.options.map((_, index) => index)
+    );
+
+    return {
+      questionId: question.id,
+      optionOrder
+    };
+  });
+}
+
+function getPublicQuestionsFromSession(sessionQuestions) {
+  const questionMap = new Map(questions.map((q) => [q.id, q]));
+
+  return sessionQuestions
+    .map((sessionQuestion) => {
+      const question = questionMap.get(sessionQuestion.questionId);
+
+      if (!question) return null;
+
+      const optionOrder = Array.isArray(sessionQuestion.optionOrder)
+        ? sessionQuestion.optionOrder
+        : question.options.map((_, index) => index);
+
+      return {
+        id: question.id,
+        topic: question.topic,
+        question: question.question,
+        options: optionOrder.map((originalOptionIndex) => {
+          return question.options[originalOptionIndex];
+        })
+      };
+    })
+    .filter(Boolean);
+}
+
+function getElapsedSeconds(startedAtMs) {
+  const elapsed = Math.floor((Date.now() - Number(startedAtMs)) / 1000);
+
+  if (!Number.isFinite(elapsed)) return 0;
+
+  return Math.max(0, Math.min(TIME_LIMIT_SECONDS, elapsed));
+}
+
+function isTimeExpired(session) {
+  return Date.now() - Number(session.startedAtMs) >= TIME_LIMIT_SECONDS * 1000;
+}
+
+app.get("/api/config", (req, res) => {
+  res.json({
+    timeLimitSeconds: TIME_LIMIT_SECONDS
+  });
+});
+
+app.get("/api/leaderboard", (req, res) => {
+  res.json(getLeaderboard());
+});
+
+app.get("/api/questions", (req, res) => {
+  res.json(
+    questions.map((q) => ({
+      id: q.id,
+      topic: q.topic,
+      question: q.question,
+      options: q.options
+    }))
+  );
+});
+
+app.post("/api/start", submitLimiter, (req, res) => {
+  const displayName = cleanDisplayName(req.body?.displayName);
+
+  if (!displayName) {
+    return res.status(400).json({
+      message: "Vui lòng nhập tên trước khi làm bài."
+    });
+  }
+
+  const sessionId = crypto.randomUUID();
+  const startedAtMs = Date.now();
+  const sessionQuestions = createSessionQuestions();
+
+  createSession({
+    sessionId,
+    displayName,
+    startedAtMs,
+    sessionQuestions
+  });
+
+  res.json({
+    sessionId,
+    displayName,
+    startedAtMs,
+    timeLimitSeconds: TIME_LIMIT_SECONDS,
+    questions: getPublicQuestionsFromSession(sessionQuestions)
+  });
+});
+
+app.get("/api/session/:sessionId", (req, res) => {
+  const session = getSession(req.params.sessionId);
+
+  if (!session) {
+    return res.status(404).json({
+      message: "Phiên làm bài không tồn tại."
+    });
+  }
+
+  res.json({
+    sessionId: session.sessionId,
+    displayName: session.displayName,
+    startedAtMs: session.startedAtMs,
+    timeLimitSeconds: TIME_LIMIT_SECONDS,
+    answers: session.answers,
+    results: session.results,
+    submitted: session.submitted,
+    questions: getPublicQuestionsFromSession(session.sessionQuestions)
+  });
+});
+
+app.post("/api/check-answer", submitLimiter, (req, res) => {
+  const { sessionId, questionId, selectedIndex } = req.body || {};
+
+  const session = getSession(sessionId);
+
+  if (!session) {
+    return res.status(404).json({
+      message: "Phiên làm bài không tồn tại. Vui lòng bắt đầu lại."
+    });
+  }
+
+  if (session.submitted) {
+    return res.status(400).json({
+      message: "Bài này đã được nộp."
+    });
+  }
+
+  if (isTimeExpired(session)) {
+    return res.status(403).json({
+      message: "Đã hết thời gian làm bài."
+    });
+  }
+
+  const sessionQuestion = session.sessionQuestions.find((item) => {
+    return item.questionId === questionId;
+  });
+
+  if (!sessionQuestion) {
+    return res.status(400).json({
+      message: "Câu hỏi không thuộc phiên làm bài này."
+    });
+  }
+
+  const question = questions.find((q) => q.id === questionId);
+
+  if (!question) {
+    return res.status(404).json({
+      message: "Không tìm thấy câu hỏi."
+    });
+  }
+
+  const optionIndex = Number(selectedIndex);
+
+  if (
+    !Number.isInteger(optionIndex) ||
+    optionIndex < 0 ||
+    optionIndex >= question.options.length
+  ) {
+    return res.status(400).json({
+      message: "Đáp án không hợp lệ."
+    });
+  }
+
+  const answers = session.answers || {};
+  const results = session.results || {};
+
+  if (Object.prototype.hasOwnProperty.call(results, questionId)) {
+    return res.json({
+      selectedIndex: answers[questionId],
+      isCorrect: results[questionId],
+      locked: true
+    });
+  }
+
+  const originalOptionIndex = sessionQuestion.optionOrder[optionIndex];
+  const isCorrect = originalOptionIndex === getCorrectIndex(question);
+
+  answers[questionId] = optionIndex;
+  results[questionId] = isCorrect;
+
+  saveSessionProgress({
+    sessionId,
+    answers,
+    results
+  });
+
+  res.json({
+    selectedIndex: optionIndex,
+    isCorrect,
+    locked: true
+  });
+});
+
+app.post("/api/submit", submitLimiter, (req, res) => {
+  const { sessionId } = req.body || {};
+
+  const session = getSession(sessionId);
+
+  if (!session) {
+    return res.status(404).json({
+      message: "Phiên làm bài không tồn tại. Vui lòng bắt đầu lại."
+    });
+  }
+
+  if (session.submitted) {
+    return res.status(400).json({
+      message: "Bài này đã được nộp trước đó."
+    });
+  }
+
+  const answers = session.answers || {};
+  const results = session.results || {};
+
+  let score = 0;
+
+  const detailResults = session.sessionQuestions.map((sessionQuestion) => {
+    const questionId = sessionQuestion.questionId;
+
+    const selectedIndex = Object.prototype.hasOwnProperty.call(
+      answers,
+      questionId
+    )
+      ? answers[questionId]
+      : null;
+
+    const isCorrect = results[questionId] === true;
+
+    if (isCorrect) score++;
+
+    return {
+      questionId,
+      selectedIndex,
+      isCorrect
+    };
+  });
+
+  const total = questions.length;
+  const durationSeconds = getElapsedSeconds(session.startedAtMs);
+
+  insertAttempt({
+    displayName: session.displayName,
+    score,
+    total,
+    durationSeconds
+  });
+
+  markSessionSubmitted(sessionId);
+
+  const leaderboard = getLeaderboard();
+
+  io.emit("leaderboard:update", leaderboard);
+
+  res.json({
+    score,
+    total,
+    durationSeconds,
+    results: detailResults,
+    leaderboard
+  });
+});
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const clientDistPath = path.join(__dirname, "../client/dist");
+
+app.use(express.static(clientDistPath));
+
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(clientDistPath, "index.html"));
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Quiz time limit: ${TIME_LIMIT_SECONDS}s`);
 });

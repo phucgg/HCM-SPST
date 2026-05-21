@@ -13,7 +13,12 @@ COPY client/package*.json ./client/
 RUN cd client && npm install
 
 COPY . .
+
 RUN npm run build
+
+# Tạo thư mục chứa database để tránh lỗi "directory does not exist"
+RUN mkdir -p /app/data
+RUN mkdir -p /data
 
 ENV NODE_ENV=production
 ENV PORT=3000

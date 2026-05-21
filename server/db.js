@@ -1,38 +1,236 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+import Database from "better-sqlite3";
+import fs from "fs";
+import path from "path";
 
-const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'server', 'app.db');
-export const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const dbPath = process.env.DB_PATH || path.join(process.cwd(), "data", "app.db");
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS attempts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 2 AND 24),
-  score INTEGER NOT NULL CHECK(score >= 0),
-  total INTEGER NOT NULL CHECK(total > 0),
-  duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+const dbDir = path.dirname(dbPath);
 
-CREATE INDEX IF NOT EXISTS idx_attempts_leaderboard
-ON attempts(score DESC, duration_ms ASC, created_at ASC);
-`);
-
-export function insertAttempt({ nickname, score, total, durationMs }) {
-  const stmt = db.prepare(`
-    INSERT INTO attempts (nickname, score, total, duration_ms)
-    VALUES (@nickname, @score, @total, @durationMs)
-  `);
-  return stmt.run({ nickname, score, total, durationMs });
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
 }
 
-export function getLeaderboard(limit = 10) {
+export const db = new Database(dbPath);
+
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS quiz_sessions (
+    session_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    answers_json TEXT NOT NULL DEFAULT '{}',
+    results_json TEXT NOT NULL DEFAULT '{}',
+    session_questions_json TEXT NOT NULL DEFAULT '[]',
+    submitted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+const sessionColumns = db
+  .prepare("PRAGMA table_info(quiz_sessions)")
+  .all()
+  .map((col) => col.name);
+
+if (!sessionColumns.includes("answers_json")) {
+  db.exec(`
+    ALTER TABLE quiz_sessions
+    ADD COLUMN answers_json TEXT NOT NULL DEFAULT '{}'
+  `);
+}
+
+if (!sessionColumns.includes("results_json")) {
+  db.exec(`
+    ALTER TABLE quiz_sessions
+    ADD COLUMN results_json TEXT NOT NULL DEFAULT '{}'
+  `);
+}
+
+if (!sessionColumns.includes("session_questions_json")) {
+  db.exec(`
+    ALTER TABLE quiz_sessions
+    ADD COLUMN session_questions_json TEXT NOT NULL DEFAULT '[]'
+  `);
+}
+
+if (!sessionColumns.includes("submitted")) {
+  db.exec(`
+    ALTER TABLE quiz_sessions
+    ADD COLUMN submitted INTEGER NOT NULL DEFAULT 0
+  `);
+}
+
+function safeJsonParse(value, fallback) {
+  try {
+    if (!value) return fallback;
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeDisplayName(displayName) {
+  return String(displayName || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 30);
+}
+
+export function createSession({
+  sessionId,
+  displayName,
+  startedAtMs,
+  sessionQuestions
+}) {
+  const safeName = normalizeDisplayName(displayName);
+
+  if (!sessionId) {
+    throw new Error("sessionId is required");
+  }
+
+  if (!safeName) {
+    throw new Error("displayName is required");
+  }
+
+  db.prepare(`
+    INSERT INTO quiz_sessions (
+      session_id,
+      display_name,
+      started_at_ms,
+      answers_json,
+      results_json,
+      session_questions_json,
+      submitted
+    )
+    VALUES (?, ?, ?, '{}', '{}', ?, 0)
+  `).run(
+    sessionId,
+    safeName,
+    Number(startedAtMs),
+    JSON.stringify(Array.isArray(sessionQuestions) ? sessionQuestions : [])
+  );
+}
+
+export function getSession(sessionId) {
+  const row = db.prepare(`
+    SELECT
+      session_id AS sessionId,
+      display_name AS displayName,
+      started_at_ms AS startedAtMs,
+      answers_json AS answersJson,
+      results_json AS resultsJson,
+      session_questions_json AS sessionQuestionsJson,
+      submitted
+    FROM quiz_sessions
+    WHERE session_id = ?
+  `).get(sessionId);
+
+  if (!row) return null;
+
+  return {
+    sessionId: row.sessionId,
+    displayName: row.displayName,
+    startedAtMs: Number(row.startedAtMs),
+    answers: safeJsonParse(row.answersJson, {}),
+    results: safeJsonParse(row.resultsJson, {}),
+    sessionQuestions: safeJsonParse(row.sessionQuestionsJson, []),
+    submitted: Number(row.submitted) === 1
+  };
+}
+
+export function saveSessionProgress({ sessionId, answers, results }) {
+  if (!sessionId) {
+    throw new Error("sessionId is required");
+  }
+
+  db.prepare(`
+    UPDATE quiz_sessions
+    SET
+      answers_json = ?,
+      results_json = ?
+    WHERE session_id = ?
+  `).run(
+    JSON.stringify(answers || {}),
+    JSON.stringify(results || {}),
+    sessionId
+  );
+}
+
+export function markSessionSubmitted(sessionId) {
+  if (!sessionId) {
+    throw new Error("sessionId is required");
+  }
+
+  db.prepare(`
+    UPDATE quiz_sessions
+    SET submitted = 1
+    WHERE session_id = ?
+  `).run(sessionId);
+}
+
+export function insertAttempt({
+  displayName,
+  score,
+  total,
+  durationSeconds
+}) {
+  const safeName = normalizeDisplayName(displayName);
+
+  if (!safeName) {
+    throw new Error("displayName is required");
+  }
+
+  const safeScore = Number.isFinite(Number(score))
+    ? Math.max(0, Math.floor(Number(score)))
+    : 0;
+
+  const safeTotal = Number.isFinite(Number(total))
+    ? Math.max(0, Math.floor(Number(total)))
+    : 0;
+
+  const safeDuration = Number.isFinite(Number(durationSeconds))
+    ? Math.max(0, Math.floor(Number(durationSeconds)))
+    : 0;
+
+  db.prepare(`
+    INSERT INTO attempts (
+      display_name,
+      score,
+      total,
+      duration_seconds
+    )
+    VALUES (?, ?, ?, ?)
+  `).run(
+    safeName,
+    safeScore,
+    safeTotal,
+    safeDuration
+  );
+}
+
+export function getLeaderboard() {
   return db.prepare(`
-    SELECT nickname, score, total, duration_ms AS durationMs, created_at AS createdAt
+    SELECT
+      display_name AS displayName,
+      score,
+      total,
+      duration_seconds AS durationSeconds,
+      created_at AS createdAt
     FROM attempts
-    ORDER BY score DESC, duration_ms ASC, created_at ASC
-    LIMIT ?
-  `).all(limit);
+    ORDER BY
+      score DESC,
+      duration_seconds ASC,
+      created_at ASC
+    LIMIT 20
+  `).all();
 }
