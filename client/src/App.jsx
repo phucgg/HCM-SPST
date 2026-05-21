@@ -425,9 +425,6 @@ export default function App() {
           <h1>
             Tư tưởng Hồ Chí Minh về độc lập dân tộc gắn liền với chủ nghĩa xã hội
           </h1>
-          <p>
-            Nhập tên để bắt đầu. Mỗi phiên làm bài sẽ tự xáo trộn câu hỏi và đáp án.
-          </p>
         </section>
 
         <section className="layout">
@@ -444,11 +441,6 @@ export default function App() {
             {startError && <p className="error-text">{startError}</p>}
 
             <button onClick={startQuiz}>Bắt đầu</button>
-
-            <p className="privacy-note">
-              App lưu tiến trình trên trình duyệt để reload không mất bài. Đáp án đúng
-              được kiểm tra ở server, không gửi sẵn về frontend.
-            </p>
           </section>
 
           {renderLeaderboard()}
@@ -464,10 +456,6 @@ export default function App() {
         <h1>
           Tư tưởng Hồ Chí Minh về độc lập dân tộc gắn liền với chủ nghĩa xã hội
         </h1>
-        <p>
-          Bài làm có giới hạn thời gian, xáo trộn theo từng phiên và bảng xếp hạng
-          realtime.
-        </p>
       </section>
 
       <section className="layout">
