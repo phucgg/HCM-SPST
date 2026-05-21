@@ -2,12 +2,26 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 
-const dbPath = process.env.DB_PATH || path.join(process.cwd(), "data", "app.db");
-
+const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "app.db");
+const dbPath = process.env.DB_PATH || DEFAULT_DB_PATH;
 const dbDir = path.dirname(dbPath);
 
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+console.log("[DB] db.js version: 2026-05-21-final");
+console.log("[DB] process.cwd():", process.cwd());
+console.log("[DB] DB_PATH:", process.env.DB_PATH || "(not set)");
+console.log("[DB] Resolved dbPath:", dbPath);
+console.log("[DB] Resolved dbDir:", dbDir);
+
+try {
+  if (!fs.existsSync(dbDir)) {
+    console.log("[DB] Directory does not exist. Creating:", dbDir);
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  console.log("[DB] Directory exists:", fs.existsSync(dbDir));
+} catch (error) {
+  console.error("[DB] Failed to create database directory:", error);
+  throw error;
 }
 
 export const db = new Database(dbPath);
