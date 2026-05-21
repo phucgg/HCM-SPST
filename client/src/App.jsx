@@ -361,11 +361,57 @@ export default function App() {
     setQuestions([]);
   }
 
+  function renderLeaderboard() {
+    return (
+      <aside className="leaderboard-card">
+        <h2>Bảng xếp hạng</h2>
+
+        <p className="privacy-note">
+          Xếp hạng theo số câu đúng. Nếu bằng điểm thì ai làm nhanh hơn đứng trên.
+        </p>
+
+        <div className="leaderboard-list">
+          {leaderboard.length === 0 && (
+            <p className="muted">Chưa có ai nộp bài.</p>
+          )}
+
+          {leaderboard.map((item, index) => (
+            <div
+              className="leaderboard-item"
+              key={`${item.displayName}-${item.createdAt}-${index}`}
+            >
+              <span>#{index + 1}</span>
+
+              <strong>{item.displayName}</strong>
+
+              <span>
+                {item.score}/{item.total}
+              </span>
+
+              <span>{formatDuration(item.durationSeconds)}</span>
+            </div>
+          ))}
+        </div>
+      </aside>
+    );
+  }
+
   if (isLoading) {
     return (
       <main className="page">
-        <section className="start-card">
-          <h2>Đang tải...</h2>
+        <section className="hero">
+          <p className="eyebrow">HCM Quiz</p>
+          <h1>
+            Tư tưởng Hồ Chí Minh về độc lập dân tộc gắn liền với chủ nghĩa xã hội
+          </h1>
+        </section>
+
+        <section className="layout">
+          <section className="start-card">
+            <h2>Đang tải...</h2>
+          </section>
+
+          {renderLeaderboard()}
         </section>
       </main>
     );
@@ -379,21 +425,33 @@ export default function App() {
           <h1>
             Tư tưởng Hồ Chí Minh về độc lập dân tộc gắn liền với chủ nghĩa xã hội
           </h1>
+          <p>
+            Nhập tên để bắt đầu. Mỗi phiên làm bài sẽ tự xáo trộn câu hỏi và đáp án.
+          </p>
         </section>
 
-        <section className="start-card">
-          <h2>Bắt đầu làm bài</h2>
+        <section className="layout">
+          <section className="start-card">
+            <h2>Bắt đầu làm bài</h2>
 
-          <input
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Nhập tên của bạn..."
-            maxLength={30}
-          />
+            <input
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Nhập tên của bạn..."
+              maxLength={30}
+            />
 
-          {startError && <p className="error-text">{startError}</p>}
+            {startError && <p className="error-text">{startError}</p>}
 
-          <button onClick={startQuiz}>Bắt đầu</button>
+            <button onClick={startQuiz}>Bắt đầu</button>
+
+            <p className="privacy-note">
+              App lưu tiến trình trên trình duyệt để reload không mất bài. Đáp án đúng
+              được kiểm tra ở server, không gửi sẵn về frontend.
+            </p>
+          </section>
+
+          {renderLeaderboard()}
         </section>
       </main>
     );
@@ -406,6 +464,10 @@ export default function App() {
         <h1>
           Tư tưởng Hồ Chí Minh về độc lập dân tộc gắn liền với chủ nghĩa xã hội
         </h1>
+        <p>
+          Bài làm có giới hạn thời gian, xáo trộn theo từng phiên và bảng xếp hạng
+          realtime.
+        </p>
       </section>
 
       <section className="layout">
@@ -489,7 +551,7 @@ export default function App() {
 
               {answerResults[currentQuestion.id] === false && (
                 <div className="feedback wrong">
-                  Sai.
+                  Sai. Hệ thống không hiển thị đáp án đúng.
                 </div>
               )}
 
@@ -519,36 +581,7 @@ export default function App() {
           )}
         </section>
 
-        <aside className="leaderboard-card">
-          <h2>Bảng xếp hạng</h2>
-
-          <p className="privacy-note">
-            Xếp hạng theo số câu đúng. Nếu bằng điểm thì ai làm nhanh hơn đứng trên.
-          </p>
-
-          <div className="leaderboard-list">
-            {leaderboard.length === 0 && (
-              <p className="muted">Chưa có ai nộp bài.</p>
-            )}
-
-            {leaderboard.map((item, index) => (
-              <div
-                className="leaderboard-item"
-                key={`${item.displayName}-${item.createdAt}-${index}`}
-              >
-                <span>#{index + 1}</span>
-
-                <strong>{item.displayName}</strong>
-
-                <span>
-                  {item.score}/{item.total}
-                </span>
-
-                <span>{formatDuration(item.durationSeconds)}</span>
-              </div>
-            ))}
-          </div>
-        </aside>
+        {renderLeaderboard()}
       </section>
     </main>
   );
