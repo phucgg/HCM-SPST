@@ -6,22 +6,13 @@ const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "app.db");
 const dbPath = process.env.DB_PATH || DEFAULT_DB_PATH;
 const dbDir = path.dirname(dbPath);
 
-console.log("[DB] db.js version: 2026-05-21-final");
-console.log("[DB] process.cwd():", process.cwd());
+console.log("[DB] version: 4-station-final");
 console.log("[DB] DB_PATH:", process.env.DB_PATH || "(not set)");
-console.log("[DB] Resolved dbPath:", dbPath);
-console.log("[DB] Resolved dbDir:", dbDir);
+console.log("[DB] dbPath:", dbPath);
+console.log("[DB] dbDir:", dbDir);
 
-try {
-  if (!fs.existsSync(dbDir)) {
-    console.log("[DB] Directory does not exist. Creating:", dbDir);
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-
-  console.log("[DB] Directory exists:", fs.existsSync(dbDir));
-} catch (error) {
-  console.error("[DB] Failed to create database directory:", error);
-  throw error;
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
 }
 
 export const db = new Database(dbPath);
@@ -36,6 +27,7 @@ db.exec(`
     score INTEGER NOT NULL,
     total INTEGER NOT NULL,
     duration_seconds INTEGER NOT NULL,
+    station_results_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -51,38 +43,46 @@ db.exec(`
   );
 `);
 
-const sessionColumns = db
-  .prepare("PRAGMA table_info(quiz_sessions)")
-  .all()
-  .map((col) => col.name);
+function ensureColumn(table, column, ddl) {
+  const columns = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((col) => col.name);
 
-if (!sessionColumns.includes("answers_json")) {
-  db.exec(`
-    ALTER TABLE quiz_sessions
-    ADD COLUMN answers_json TEXT NOT NULL DEFAULT '{}'
-  `);
+  if (!columns.includes(column)) {
+    db.exec(ddl);
+  }
 }
 
-if (!sessionColumns.includes("results_json")) {
-  db.exec(`
-    ALTER TABLE quiz_sessions
-    ADD COLUMN results_json TEXT NOT NULL DEFAULT '{}'
-  `);
-}
+ensureColumn(
+  "attempts",
+  "station_results_json",
+  "ALTER TABLE attempts ADD COLUMN station_results_json TEXT NOT NULL DEFAULT '[]'"
+);
 
-if (!sessionColumns.includes("session_questions_json")) {
-  db.exec(`
-    ALTER TABLE quiz_sessions
-    ADD COLUMN session_questions_json TEXT NOT NULL DEFAULT '[]'
-  `);
-}
+ensureColumn(
+  "quiz_sessions",
+  "answers_json",
+  "ALTER TABLE quiz_sessions ADD COLUMN answers_json TEXT NOT NULL DEFAULT '{}'"
+);
 
-if (!sessionColumns.includes("submitted")) {
-  db.exec(`
-    ALTER TABLE quiz_sessions
-    ADD COLUMN submitted INTEGER NOT NULL DEFAULT 0
-  `);
-}
+ensureColumn(
+  "quiz_sessions",
+  "results_json",
+  "ALTER TABLE quiz_sessions ADD COLUMN results_json TEXT NOT NULL DEFAULT '{}'"
+);
+
+ensureColumn(
+  "quiz_sessions",
+  "session_questions_json",
+  "ALTER TABLE quiz_sessions ADD COLUMN session_questions_json TEXT NOT NULL DEFAULT '[]'"
+);
+
+ensureColumn(
+  "quiz_sessions",
+  "submitted",
+  "ALTER TABLE quiz_sessions ADD COLUMN submitted INTEGER NOT NULL DEFAULT 0"
+);
 
 function safeJsonParse(value, fallback) {
   try {
@@ -108,13 +108,8 @@ export function createSession({
 }) {
   const safeName = normalizeDisplayName(displayName);
 
-  if (!sessionId) {
-    throw new Error("sessionId is required");
-  }
-
-  if (!safeName) {
-    throw new Error("displayName is required");
-  }
+  if (!sessionId) throw new Error("sessionId is required");
+  if (!safeName) throw new Error("displayName is required");
 
   db.prepare(`
     INSERT INTO quiz_sessions (
@@ -163,15 +158,11 @@ export function getSession(sessionId) {
 }
 
 export function saveSessionProgress({ sessionId, answers, results }) {
-  if (!sessionId) {
-    throw new Error("sessionId is required");
-  }
+  if (!sessionId) throw new Error("sessionId is required");
 
   db.prepare(`
     UPDATE quiz_sessions
-    SET
-      answers_json = ?,
-      results_json = ?
+    SET answers_json = ?, results_json = ?
     WHERE session_id = ?
   `).run(
     JSON.stringify(answers || {}),
@@ -181,9 +172,7 @@ export function saveSessionProgress({ sessionId, answers, results }) {
 }
 
 export function markSessionSubmitted(sessionId) {
-  if (!sessionId) {
-    throw new Error("sessionId is required");
-  }
+  if (!sessionId) throw new Error("sessionId is required");
 
   db.prepare(`
     UPDATE quiz_sessions
@@ -196,13 +185,12 @@ export function insertAttempt({
   displayName,
   score,
   total,
-  durationSeconds
+  durationSeconds,
+  stationResults
 }) {
   const safeName = normalizeDisplayName(displayName);
 
-  if (!safeName) {
-    throw new Error("displayName is required");
-  }
+  if (!safeName) throw new Error("displayName is required");
 
   const safeScore = Number.isFinite(Number(score))
     ? Math.max(0, Math.floor(Number(score)))
@@ -221,14 +209,16 @@ export function insertAttempt({
       display_name,
       score,
       total,
-      duration_seconds
+      duration_seconds,
+      station_results_json
     )
-    VALUES (?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?)
   `).run(
     safeName,
     safeScore,
     safeTotal,
-    safeDuration
+    safeDuration,
+    JSON.stringify(Array.isArray(stationResults) ? stationResults : [])
   );
 }
 

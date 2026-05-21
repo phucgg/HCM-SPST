@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 
-import { questions } from "./questions.js";
+import { questions, stations, getStationById } from "./questions.js";
 import {
   createSession,
   getSession,
@@ -25,7 +25,6 @@ const io = new Server(httpServer);
 const PORT = process.env.PORT || 3000;
 
 const rawTimeLimit = Number(process.env.QUIZ_TIME_LIMIT_SECONDS || 600);
-
 const TIME_LIMIT_SECONDS = Math.min(
   600,
   Math.max(60, Number.isFinite(rawTimeLimit) ? rawTimeLimit : 600)
@@ -34,9 +33,9 @@ const TIME_LIMIT_SECONDS = Math.min(
 app.use(helmet());
 app.use(express.json({ limit: "100kb" }));
 
-const submitLimiter = rateLimit({
+const limiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 60,
+  limit: 80,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -46,12 +45,6 @@ function cleanDisplayName(name) {
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 30);
-}
-
-function getCorrectIndex(question) {
-  if (Number.isInteger(question.correctIndex)) return question.correctIndex;
-  if (Number.isInteger(question.answerIndex)) return question.answerIndex;
-  return -1;
 }
 
 function shuffleArray(array) {
@@ -66,22 +59,34 @@ function shuffleArray(array) {
 }
 
 function createSessionQuestions() {
-  const shuffledQuestions = shuffleArray(questions);
+  const orderedStations = [...stations].sort((a, b) => a.order - b.order);
+  const sessionQuestions = [];
 
-  return shuffledQuestions.map((question) => {
-    const optionOrder = shuffleArray(
-      question.options.map((_, index) => index)
+  for (const station of orderedStations) {
+    const stationQuestions = questions.filter(
+      (question) => question.stationId === station.id
     );
 
-    return {
-      questionId: question.id,
-      optionOrder
-    };
-  });
+    const shuffledStationQuestions = shuffleArray(stationQuestions);
+
+    for (const question of shuffledStationQuestions) {
+      const optionOrder = shuffleArray(
+        question.options.map((_, index) => index)
+      );
+
+      sessionQuestions.push({
+        questionId: question.id,
+        stationId: question.stationId,
+        optionOrder
+      });
+    }
+  }
+
+  return sessionQuestions;
 }
 
 function getPublicQuestionsFromSession(sessionQuestions) {
-  const questionMap = new Map(questions.map((q) => [q.id, q]));
+  const questionMap = new Map(questions.map((question) => [question.id, question]));
 
   return sessionQuestions
     .map((sessionQuestion) => {
@@ -89,13 +94,17 @@ function getPublicQuestionsFromSession(sessionQuestions) {
 
       if (!question) return null;
 
+      const station = getStationById(question.stationId);
+
       const optionOrder = Array.isArray(sessionQuestion.optionOrder)
         ? sessionQuestion.optionOrder
         : question.options.map((_, index) => index);
 
       return {
         id: question.id,
-        topic: question.topic,
+        stationId: question.stationId,
+        stationTitle: station?.title || "",
+        stationShortTitle: station?.shortTitle || "",
         question: question.question,
         options: optionOrder.map((originalOptionIndex) => {
           return question.options[originalOptionIndex];
@@ -117,9 +126,37 @@ function isTimeExpired(session) {
   return Date.now() - Number(session.startedAtMs) >= TIME_LIMIT_SECONDS * 1000;
 }
 
+function buildStationResults(results = {}) {
+  return stations
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((station) => {
+      const stationQuestions = questions.filter(
+        (question) => question.stationId === station.id
+      );
+
+      const total = stationQuestions.length;
+      const score = stationQuestions.reduce((sum, question) => {
+        return sum + (results[question.id] === true ? 1 : 0);
+      }, 0);
+
+      return {
+        stationId: station.id,
+        order: station.order,
+        title: station.title,
+        shortTitle: station.shortTitle,
+        badge: station.badge,
+        score,
+        total,
+        completed: score === total
+      };
+    });
+}
+
 app.get("/api/config", (req, res) => {
   res.json({
-    timeLimitSeconds: TIME_LIMIT_SECONDS
+    timeLimitSeconds: TIME_LIMIT_SECONDS,
+    stations
   });
 });
 
@@ -127,18 +164,7 @@ app.get("/api/leaderboard", (req, res) => {
   res.json(getLeaderboard());
 });
 
-app.get("/api/questions", (req, res) => {
-  res.json(
-    questions.map((q) => ({
-      id: q.id,
-      topic: q.topic,
-      question: q.question,
-      options: q.options
-    }))
-  );
-});
-
-app.post("/api/start", submitLimiter, (req, res) => {
+app.post("/api/start", limiter, (req, res) => {
   const displayName = cleanDisplayName(req.body?.displayName);
 
   if (!displayName) {
@@ -163,6 +189,7 @@ app.post("/api/start", submitLimiter, (req, res) => {
     displayName,
     startedAtMs,
     timeLimitSeconds: TIME_LIMIT_SECONDS,
+    stations,
     questions: getPublicQuestionsFromSession(sessionQuestions)
   });
 });
@@ -184,11 +211,12 @@ app.get("/api/session/:sessionId", (req, res) => {
     answers: session.answers,
     results: session.results,
     submitted: session.submitted,
+    stations,
     questions: getPublicQuestionsFromSession(session.sessionQuestions)
   });
 });
 
-app.post("/api/check-answer", submitLimiter, (req, res) => {
+app.post("/api/check-answer", limiter, (req, res) => {
   const { sessionId, questionId, selectedIndex } = req.body || {};
 
   const session = getSession(sessionId);
@@ -221,7 +249,7 @@ app.post("/api/check-answer", submitLimiter, (req, res) => {
     });
   }
 
-  const question = questions.find((q) => q.id === questionId);
+  const question = questions.find((item) => item.id === questionId);
 
   if (!question) {
     return res.status(404).json({
@@ -248,12 +276,14 @@ app.post("/api/check-answer", submitLimiter, (req, res) => {
     return res.json({
       selectedIndex: answers[questionId],
       isCorrect: results[questionId],
-      locked: true
+      locked: true,
+      stationId: question.stationId,
+      feedback: question.feedback
     });
   }
 
   const originalOptionIndex = sessionQuestion.optionOrder[optionIndex];
-  const isCorrect = originalOptionIndex === getCorrectIndex(question);
+  const isCorrect = originalOptionIndex === question.correctIndex;
 
   answers[questionId] = optionIndex;
   results[questionId] = isCorrect;
@@ -267,11 +297,13 @@ app.post("/api/check-answer", submitLimiter, (req, res) => {
   res.json({
     selectedIndex: optionIndex,
     isCorrect,
-    locked: true
+    locked: true,
+    stationId: question.stationId,
+    feedback: question.feedback
   });
 });
 
-app.post("/api/submit", submitLimiter, (req, res) => {
+app.post("/api/submit", limiter, (req, res) => {
   const { sessionId } = req.body || {};
 
   const session = getSession(sessionId);
@@ -295,33 +327,30 @@ app.post("/api/submit", submitLimiter, (req, res) => {
 
   const detailResults = session.sessionQuestions.map((sessionQuestion) => {
     const questionId = sessionQuestion.questionId;
-
-    const selectedIndex = Object.prototype.hasOwnProperty.call(
-      answers,
-      questionId
-    )
-      ? answers[questionId]
-      : null;
-
     const isCorrect = results[questionId] === true;
 
     if (isCorrect) score++;
 
     return {
       questionId,
-      selectedIndex,
+      stationId: sessionQuestion.stationId,
+      selectedIndex: Object.prototype.hasOwnProperty.call(answers, questionId)
+        ? answers[questionId]
+        : null,
       isCorrect
     };
   });
 
   const total = questions.length;
   const durationSeconds = getElapsedSeconds(session.startedAtMs);
+  const stationResults = buildStationResults(results);
 
   insertAttempt({
     displayName: session.displayName,
     score,
     total,
-    durationSeconds
+    durationSeconds,
+    stationResults
   });
 
   markSessionSubmitted(sessionId);
@@ -335,6 +364,7 @@ app.post("/api/submit", submitLimiter, (req, res) => {
     total,
     durationSeconds,
     results: detailResults,
+    stationResults,
     leaderboard
   });
 });

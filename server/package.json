@@ -1,5 +1,3 @@
 {
-  "dependencies": {
-    "hcm-independence-socialism-quiz": "file:.."
-  }
+  "type": "module"
 }
