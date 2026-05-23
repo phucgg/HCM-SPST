@@ -724,7 +724,7 @@ export default function App() {
     return (
       <main className="page">
         <section className="hero">
-          <p className="eyebrow">HCM Mission</p>
+          <p className="eyebrow">HCM202 Mission</p>
           <h1>4 trạm vận dụng tư tưởng Hồ Chí Minh</h1>
           <p>Đang tải dữ liệu...</p>
         </section>
@@ -738,7 +738,7 @@ export default function App() {
 
       <section className="hero">
         <div className="hero-content">
-          <p className="eyebrow">HCM Mission</p>
+          <p className="eyebrow">HCM202 Mission</p>
           <h1>4 trạm vận dụng tư tưởng Hồ Chí Minh</h1>
           <p>
             Hành trình tương tác về độc lập dân tộc gắn liền với chủ nghĩa xã hội
@@ -748,7 +748,7 @@ export default function App() {
 
         <div className="hero-chip">
           <span>10 phút</span>
-          <span>Realtime</span>
+          <span>A.I USAGE</span>
           <span>4 trạm</span>
           <span>Click trạm để học</span>
         </div>
